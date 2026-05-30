@@ -69,7 +69,7 @@ generate a 32-byte encryption key:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-put the output in `TOKEN_ENCRYPTION_KEY`. if you lose thhis, stored tokens cannot be decrypted and users must run `/link-system` again.
+put the output in `TOKEN_ENCRYPTION_KEY`. if you lose this, stored tokens cannot be decrypted and users must run `/link-system` again.
 
 ### 5. register slash commands
 
