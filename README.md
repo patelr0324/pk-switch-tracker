@@ -1,0 +1,328 @@
+# pk-switch-tracker
+
+a discord bot that watches [pluralkit](https://pluralkit.me) systems for front changes and posts switch embeds to channels you configure. each user links their own pk api token. the bot stores it (encrypted) and polls pluralkit (optional http webhook).
+
+## features
+
+- **per-user linking** — one pluralkit system per discord account via `/link-system`
+- **multi-channel routing** — post the same switch to multiple guild channels
+- **per-channel enable/disable** — keep overall channel configs while toggling individual channel config
+- **global on/off** — pause all posting without losing settings
+- **display vs registered names** — choose how member names appear in embeds
+- **timezone-based timestamps** — iana timezones on switch embeds
+- **live system name sync** — system display names refresh from pluralkit on each poll
+- **resilient pk api client** — configurable timeout and retries for slow or flaky api responses
+- **optional webhook listener** — accept switch payloads over http when you have an integration that forwards them
+- **dev mode** — restrict switch posting to a single test guild while developing
+
+## requirements
+
+- **node.js** 20 or newer
+- a discord application with a bot user
+- network access to `discord.com` and `api.pluralkit.me`
+
+## quick start
+
+### 1. clone and install
+
+```bash
+git clone https://github.com/patelr0324/pk-switch-tracker.git
+cd pk-switch-tracker
+npm install
+```
+
+### 2. create a discord application
+
+1. open the [discord developer portal](https://discord.com/developers/applications) and create an application.
+2. go to **bot** → **reset token** and copy the bot token (this is `DISCORD_TOKEN`). never commit it.
+3. copy the **application id** from **general information** (this is `DISCORD_CLIENT_ID`).
+4. under **bot → privileged gateway intents**, you do not need message content, server members, or presence. the bot only uses the default guilds intent.
+
+### 3. invite the bot to your server
+
+use **oauth2 → url generator** with:
+
+| setting | value |
+|--------|--------|
+| **scopes** | `bot`, `applications.commands` |
+| **bot permissions** | view channels, send messages, embed links |
+
+or use this url (replace `YOUR_CLIENT_ID`):
+
+```
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=19456&scope=bot%20applications.commands
+```
+
+in each channel where switches should post, ensure the bot role can **view channel**, **send messages**, and **embed links** (check channel permission overrides if posts fail).
+
+### 4. configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+edit `.env` and set at least the required values (see [configuration](#configuration)).
+
+generate a 32-byte encryption key:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+put the output in `TOKEN_ENCRYPTION_KEY`. if you lose thhis, stored tokens cannot be decrypted and users must run `/link-system` again.
+
+### 5. register slash commands
+
+```bash
+npm run register-commands
+```
+
+- with `DEV_MODE=false` (default), commands register globally (can take up to an hour to appear everywhere).
+- with `DEV_MODE=true` and `DISCORD_GUILD_ID` set, commands register only to that guild (instant).
+
+### 6. start the bot
+
+```bash
+npm start
+```
+
+you should see login success, poll/webhook startup logs, and no missing-env errors if all went well
+
+---
+
+## configuration
+
+all settings are loaded from `.env` via `dotenv`. see `.env.example` for a template.
+
+### required
+
+| variable | description |
+|----------|-------------|
+| `DISCORD_TOKEN` | bot token from the developer portal |
+| `DISCORD_CLIENT_ID` | application (client) id |
+| `TOKEN_ENCRYPTION_KEY` | 32-byte key: 64-char hex, 32-byte base64, or exactly 32 utf-8 characters. used to encrypt pk api tokens in the database file. |
+
+### optional
+
+| variable | default | description |
+|----------|---------|-------------|
+| `DISCORD_GUILD_ID` | _(empty)_ | guild id for dev-scoped command registration and dev-mode posting filter |
+| `DATABASE_PATH` | `./data/bot.db` | path to the json database file (resolved from project root). example setups often use `./data/bot-data.json`. |
+| `PK_API_BASE` | `https://api.pluralkit.me/v2` | pluralkit api base url |
+| `PK_API_TIMEOUT_MS` | `45000` | http timeout per pk request (milliseconds) |
+| `PK_API_MAX_RETRIES` | `4` | extra retry attempts on transient errors (timeouts, connection resets, 429, 502–504) |
+| `POLL_INTERVAL_MS` | `30000` | how often to poll pk for new switches (milliseconds) |
+| `WEBHOOK_PORT` | `8787` | port for the optional http webhook listener |
+| `WEBHOOK_PATH` | `/pk-webhook` | url path for webhook posts |
+| `WEBHOOK_SECRET` | _(empty)_ | if set, requests must send header `x-webhook-secret` with this value |
+| `DEV_MODE` | `false` | when `true`, switch posts only go to channels in `DISCORD_GUILD_ID` |
+
+## user guide (slash commands)
+
+commands are ephemeral by default (only you see the confirmation)
+
+### `/link-system`
+
+links your discord account to a pluralkit system.
+
+| option | required | description |
+|--------|----------|-------------|
+| `token` | yes | your pluralkit api token ([how to get one](https://pluralkit.me/faq#how-do-i-get-an-api-token)) |
+| `timezone` | no | iana timezone (e.g. `America/Chicago`). defaults to `UTC` |
+
+re-running this updates your token, timezone, and system metadata. each discord user can link one system only.
+
+### `/switches`
+
+manage posting (requires a linked system).
+
+| subcommand | description |
+|------------|-------------|
+| `enable` | turn on switch posting globally |
+| `disable` | turn off switch posting globally (channel list is kept) |
+| `add-channel` | add a text channel and enable it |
+| `remove-channel` | remove a channel from your config |
+| `list-channels` | show configured channels and enabled/disabled status |
+| `enable-channel` | enable posting for an existing channel |
+| `disable-channel` | disable posting for a channel without removing it |
+| `set-name-mode` | `display` or `registered` — which member name field to show |
+
+---
+
+## how switch detection works
+
+```mermaid
+flowchart LR
+  subgraph sources [detection]
+    Poll[poll pk api every POLL_INTERVAL_MS]
+    Hook[optional http webhook]
+  end
+  subgraph process [processing]
+    Name[sync system name from pk]
+    Switch[fetch latest switch + members]
+    Sig[compare switch signature]
+    Post[post embed to enabled channels]
+  end
+  Poll --> Name
+  Hook --> Name
+  Name --> Switch
+  Switch --> Sig
+  Sig -->|new switch| Post
+  Sig -->|unchanged| Skip[skip post]
+```
+
+1. **polling** — on an interval, the bot checks every linked system that has posting enabled. it fetches the latest switch from pluralkit and compares a signature (switch id, or timestamp + members + names) to the last posted switch.
+2. **webhooks** — a small http server accepts `POST` requests on `WEBHOOK_PATH`. if the payload includes a system id and switch data, that system is processed immediately; otherwise a full poll runs. pluralkit does not ship a built-in “send to my bot url” feature — webhooks are for your own proxy, automation, or future integration that forwards switch events.
+3. **embeds** — title uses the pk system name (kept up to date each poll). body lists fronting members; thumbnail/color come from the first member when available.
+4. **deduplication** — the same switch is not posted twice. if no channel accepts the message, the signature is not advanced (so a later retry can still post).
+
+---
+
+## optional webhook setup
+
+the bot listens on `http://0.0.0.0:WEBHOOK_PORT` + `WEBHOOK_PATH` (default `http://localhost:8787/pk-webhook`).
+
+- **method:** `POST`
+- **content-type:** json body
+- **auth (optional):** header `x-webhook-secret: <WEBHOOK_SECRET>` when `WEBHOOK_SECRET` is set
+
+the handler recognizes payloads roughly like:
+
+```json
+{
+  "system": { "id": "abcd12" },
+  "switch": {
+    "id": "...",
+    "timestamp": "2026-05-25T12:00:00Z",
+    "members": ["member_id_or_object"]
+  }
+}
+```
+
+variants with `system_id`, `data.system`, or a top-level switch object are also supported.
+
+if the webhook port is already in use, the bot logs a warning and **continues with polling only**.
+
+for production behind a reverse proxy, terminate tls at nginx/caddy and forward to `WEBHOOK_PORT`. expose only if you trust the network or use `WEBHOOK_SECRET`.
+
+---
+
+## development mode
+
+set `DEV_MODE=true` and `DISCORD_GUILD_ID` to your test server:
+
+- `npm run register-commands` registers commands **only** in that guild.
+- switch embeds are sent **only** to channels whose `guild_id` matches `DISCORD_GUILD_ID` (other configured channels are ignored until dev mode is off).
+
+use this to test without posting to production servers. you also don't need to wait for commands to propogate globally for faster testing.
+
+---
+
+## data storage
+
+- state is stored in a json file at `DATABASE_PATH` (not sqlite).
+- the `data/` directory is gitignored. back up your database file and `TOKEN_ENCRYPTION_KEY` together when migrating hosts.
+- stored fields include encrypted api tokens, channel mappings, last switch signatures, timezones, and preferences.
+
+**do not commit** `.env` or your database file.
+
+---
+
+## long-running deployment
+
+### updates
+
+```bash
+git pull
+npm install
+npm run register-commands   # only if commands changed
+```
+
+### logs to watch for
+
+| message | meaning |
+|---------|---------|
+| `failed to fetch latest switch` | pk api error for one system; will retry next poll |
+| `failed to refresh system name` | name sync failed; posting may still work with cached name |
+| `failed to send ... switch` | discord permission or missing channel |
+| `switch relay failed ... no channels accepted` | no enabled channel could receive the message |
+| `webhook port ... already in use` | webhook disabled; polling still runs |
+| `dev mode enabled: posting scoped to guild` | dev mode active |
+
+### tuning api reliability
+
+if pluralkit is slow or you see timeout errors:
+
+```env
+PK_API_TIMEOUT_MS=60000
+PK_API_MAX_RETRIES=5
+POLL_INTERVAL_MS=45000
+```
+
+higher poll intervals reduce api load but increase detection delay.
+
+### backups
+
+1. stop the bot (or copy while running)
+2. copy `DATABASE_PATH` and secure store for `TOKEN_ENCRYPTION_KEY` and `.env`
+
+### rotating secrets
+
+| secret | action |
+|--------|--------|
+| discord bot token | reset in developer portal, update `.env`, restart |
+| `TOKEN_ENCRYPTION_KEY` | generate new key, restart — **all users must `/link-system` again** |
+| user pk token | user runs `/link-system` with a new token |
+
+---
+
+## troubleshooting
+
+| problem | things to check |
+|---------|------------------|
+| slash commands missing | run `npm run register-commands`; wait for global propagation or use dev guild + `DEV_MODE=true` |
+| bot online but no posts | `/switches enable`, channel added, channel enabled (✅ in `list-channels`), global disable off |
+| posts in wrong server during testing | `DEV_MODE` and `DISCORD_GUILD_ID` |
+| `Missing required environment variable` | `.env` in project root; required vars set |
+| `failed to validate pluralkit token` | token copied correctly; pk account has api access |
+| embeds fail in one channel | bot permissions in that channel; channel still exists |
+| duplicate posts after bot downtime | rare edge case if signature was not saved; usually self-corrects on next switch |
+| old system name on embeds | wait one poll cycle after renaming on pk, or re-run `/link-system` |
+
+---
+
+## project structure
+
+```
+pk-switch-tracker/
+├── data/                 # local database (gitignored); create via runtime
+├── src/
+│   ├── index.js          # discord client + webhook server entry
+│   ├── config.js         # environment configuration
+│   ├── commands.js       # slash command definitions and handlers
+│   ├── registerCommands.js
+│   ├── switchWorker.js   # poll loop, embed building, deduplication
+│   ├── pkClient.js       # pluralkit http client with retries
+│   ├── db.js             # json file database
+│   └── crypto.js         # token encryption (aes-256-gcm)
+├── .env.example
+├── package.json
+└── README.md
+```
+
+---
+
+## security notes
+
+- pluralkit api tokens are **encrypted at rest** with `TOKEN_ENCRYPTION_KEY`.
+- tokens are sent only to pluralkit over https during polls.
+- slash command replies for linking are **ephemeral** so tokens are not broadcast to the channel.
+- run the bot on infrastructure you trust; anyone with server filesystem access can read `.env` and the database.
+- use `WEBHOOK_SECRET` if the webhook port is reachable from a network.
+
+---
+
+## acknowledgments
+
+- [pluralkit](https://pluralkit.me) for the api and proxy system
+- [discord.js](https://discord.js.org/) for the discord integration
