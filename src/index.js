@@ -7,7 +7,10 @@ const { handleInteraction } = require("./commands");
 const { startSwitchRelay } = require("./switchWorker");
 
 const db = new BotDatabase(config.databasePath);
-const pkClient = new PKClient(config.pkApiBase);
+const pkClient = new PKClient(config.pkApiBase, {
+  timeoutMs: config.pkApiTimeoutMs,
+  maxRetries: config.pkApiMaxRetries
+});
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]

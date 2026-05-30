@@ -21,6 +21,8 @@ module.exports = {
   tokenEncryptionKey: required("TOKEN_ENCRYPTION_KEY"),
   databasePath: path.resolve(process.cwd(), databasePath),
   pkApiBase: process.env.PK_API_BASE || "https://api.pluralkit.me/v2",
+  pkApiTimeoutMs: Number(process.env.PK_API_TIMEOUT_MS || 45000),
+  pkApiMaxRetries: Number(process.env.PK_API_MAX_RETRIES || 4),
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 30000),
   webhookPort: Number(process.env.WEBHOOK_PORT || 8787),
   webhookPath: process.env.WEBHOOK_PATH || "/pk-webhook",

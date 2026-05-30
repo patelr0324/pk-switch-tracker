@@ -145,17 +145,32 @@ function buildSwitchSignature(switchPayload, resolvedMembers, nameMode) {
   return `ts:${timestamp}|members:${memberIds.join(",")}|names:${names.join(",")}`;
 }
 
+async function syncSystemNameFromPk(system, token, pkClient, db) {
+  try {
+    const pkSystem = await pkClient.getOwnSystem(token);
+    if (pkSystem.id !== system.system_id) return;
+    const nextName = pkSystem.name || null;
+    db.setSystemName(system.system_id, nextName);
+    system.system_name = nextName;
+  } catch (error) {
+    console.error(`failed to refresh system name for ${system.system_id}:`, error.message);
+  }
+}
+
 async function processSystemSwitches(system, deps, options = {}) {
   const { db, pkClient, client, encryptionKey, postingGuildScopeId = null } = deps;
   const { latestSwitchOverride = null, source = "poll" } = options;
-  if (!system.switches_enabled) {
-    return;
-  }
 
   let token;
   try {
     token = decryptToken(system.api_token_encrypted, encryptionKey);
   } catch (error) {
+    return;
+  }
+
+  await syncSystemNameFromPk(system, token, pkClient, db);
+
+  if (!system.switches_enabled) {
     return;
   }
 

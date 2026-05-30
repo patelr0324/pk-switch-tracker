@@ -117,6 +117,15 @@ class BotDatabase {
     this.flush();
   }
 
+  setSystemName(systemId, systemName) {
+    const system = this.getSystemById(systemId);
+    if (!system) return;
+    const next = systemName || null;
+    if (system.system_name === next) return;
+    system.system_name = next;
+    this.flush();
+  }
+
   addChannel(systemId, channelId, guildId) {
     const existing = this.data.system_channels.find(
       (row) => row.system_id === systemId && row.channel_id === channelId
