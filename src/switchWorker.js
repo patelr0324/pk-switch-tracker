@@ -1,251 +1,135 @@
-const { EmbedBuilder } = require("discord.js");
 const { decryptToken } = require("./crypto");
-const { formatSwitchTime } = require("./commands");
+const {
+  buildSwitchEmbed,
+  buildSwitchSignature,
+  membersHaveNames,
+  hydrateMembers
+} = require("./members");
+const { getSystemIdFromPayload, getSwitchFromPayload } = require("./webhookPayload");
 
-function normalizeHexColor(color) {
-  if (!color || typeof color !== "string") return null;
-  const normalized = color.trim().replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
-  return Number.parseInt(normalized, 16);
+function logError(context, systemId, error) {
+  console.error(`${context} for ${systemId}:`, error.message);
 }
 
-function cleanNameCandidate(value) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const lowered = trimmed.toLowerCase();
-  if (lowered === "undefined" || lowered === "null") return null;
-  return trimmed;
-}
-
-function resolveMemberName(member) {
-  if (!member) return "unknown member";
-  if (typeof member === "string") return `member ${member}`;
-
-  return (
-    cleanNameCandidate(member.display_name) ||
-    cleanNameCandidate(member.name) ||
-    cleanNameCandidate(member.member_name) ||
-    cleanNameCandidate(member.id) ||
-    cleanNameCandidate(member.uuid) ||
-    "unknown member"
-  );
-}
-
-function resolveMemberNameByMode(member, nameMode) {
-  if (!member || typeof member !== "object") {
-    return resolveMemberName(member);
+function decryptSystemToken(system, encryptionKey) {
+  try {
+    return decryptToken(system.api_token_encrypted, encryptionKey);
+  } catch {
+    return null;
   }
-
-  if (nameMode === "registered") {
-    return (
-      cleanNameCandidate(member.name) ||
-      cleanNameCandidate(member.member_name) ||
-      cleanNameCandidate(member.display_name) ||
-      cleanNameCandidate(member.id) ||
-      "unknown member"
-    );
-  }
-
-  return (
-    cleanNameCandidate(member.display_name) ||
-    cleanNameCandidate(member.name) ||
-    cleanNameCandidate(member.member_name) ||
-    cleanNameCandidate(member.id) ||
-    "unknown member"
-  );
 }
 
-function hasResolvableName(member) {
-  if (!member || typeof member !== "object") return false;
-  return Boolean(member.display_name || member.name || member.member_name);
-}
-
-function extractMemberId(member) {
-  if (!member) return null;
-  if (typeof member === "string") return member;
-  if (typeof member !== "object") return null;
-  return member.id || member.uuid || null;
-}
-
-function getFirstMemberObject(members) {
-  const first = members[0];
-  if (!first || typeof first !== "object") return null;
-  return first;
-}
-
-function buildSwitchEmbed(systemName, members, timestamp, timezone, nameMode) {
-  const names = members.map((member) => resolveMemberNameByMode(member, nameMode));
-  const firstMember = getFirstMemberObject(members);
-  const frontingText = names.length ? names.join(", ") : "unknown";
-  const description = `**now fronting**\n${frontingText}`;
-
-  const embed = new EmbedBuilder()
-    .setTitle(systemName || "pluralkit system")
-    .setDescription(description)
-    .addFields({
-      name: "time",
-      value: formatSwitchTime(timestamp, timezone)
-    });
-
-  const color = normalizeHexColor(firstMember?.color);
-  if (color !== null) embed.setColor(color);
-  if (firstMember?.avatar_url) embed.setThumbnail(firstMember.avatar_url);
-
-  return embed;
-}
-
-function hasRealMemberNames(members, nameMode) {
-  if (!members.length) return false;
-  return members.some((member) => resolveMemberNameByMode(member, nameMode) !== "unknown member");
-}
-
-async function hydrateSwitchMembers(members, token, pkClient) {
-  const hydrated = [];
-  const cache = new Map();
-
-  for (const member of members) {
-    const needsLookup = typeof member === "string" || !hasResolvableName(member);
-    if (!needsLookup) {
-      hydrated.push(member);
-      continue;
-    }
-
-    const memberId = extractMemberId(member);
-    if (!memberId) {
-      hydrated.push(member);
-      continue;
-    }
-
-    if (cache.has(memberId)) {
-      hydrated.push(cache.get(memberId));
-      continue;
-    }
-
-    try {
-      const fetched = await pkClient.getMember(memberId, token);
-      cache.set(memberId, fetched);
-      hydrated.push(fetched);
-    } catch (error) {
-      hydrated.push(member);
-    }
-  }
-
-  return hydrated;
-}
-
-function buildSwitchSignature(switchPayload, resolvedMembers, nameMode) {
-  if (switchPayload?.id) {
-    return `id:${switchPayload.id}`;
-  }
-
-  const timestamp = switchPayload?.timestamp || "unknown";
-  const memberIds = resolvedMembers.map((member) => extractMemberId(member) || "unknown");
-  const names = resolvedMembers.map((member) => resolveMemberNameByMode(member, nameMode));
-  return `ts:${timestamp}|members:${memberIds.join(",")}|names:${names.join(",")}`;
-}
-
-async function syncSystemNameFromPk(system, token, pkClient, db) {
+async function refreshSystemName(system, token, pkClient, db) {
   try {
     const pkSystem = await pkClient.getOwnSystem(token);
     if (pkSystem.id !== system.system_id) return;
-    const nextName = pkSystem.name || null;
-    db.setSystemName(system.system_id, nextName);
-    system.system_name = nextName;
+
+    const name = pkSystem.name || null;
+    db.setSystemName(system.system_id, name);
+    system.system_name = name;
   } catch (error) {
-    console.error(`failed to refresh system name for ${system.system_id}:`, error.message);
+    logError("failed to refresh system name", system.system_id, error);
   }
+}
+
+async function fetchLatestSwitch(system, token, pkClient, override) {
+  if (override?.timestamp) return override;
+
+  try {
+    return await pkClient.getLatestSwitch(system.system_id, token);
+  } catch (error) {
+    logError("failed to fetch latest switch", system.system_id, error);
+    return null;
+  }
+}
+
+async function resolveFrontingMembers(system, latestSwitch, token, pkClient, nameMode) {
+  const raw = Array.isArray(latestSwitch.members) ? latestSwitch.members : [];
+  let members = await hydrateMembers(raw, token, pkClient);
+
+  if (membersHaveNames(members, nameMode)) return members;
+
+  try {
+    const fronters = await pkClient.getCurrentFronters(system.system_id, token);
+    const hydrated = await hydrateMembers(fronters, token, pkClient);
+    if (membersHaveNames(hydrated, nameMode)) return hydrated;
+  } catch {
+    // keep members from switch payload
+  }
+
+  return members;
+}
+
+function listPostableChannels(db, systemId, guildScopeId) {
+  return db.listChannels(systemId).filter((row) => {
+    if (!row.enabled) return false;
+    if (guildScopeId && row.guild_id !== guildScopeId) return false;
+    return true;
+  });
+}
+
+async function sendToChannels({ client, channels, embed, systemId, source }) {
+  let sent = 0;
+
+  for (const row of channels) {
+    try {
+      const channel = await client.channels.fetch(row.channel_id);
+      if (!channel?.isTextBased()) continue;
+      await channel.send({ embeds: [embed] });
+      sent += 1;
+    } catch (error) {
+      console.error(
+        `failed to send ${source} switch for ${systemId} to ${row.channel_id}:`,
+        error.message
+      );
+    }
+  }
+
+  return sent;
 }
 
 async function processSystemSwitches(system, deps, options = {}) {
   const { db, pkClient, client, encryptionKey, postingGuildScopeId = null } = deps;
   const { latestSwitchOverride = null, source = "poll" } = options;
 
-  let token;
-  try {
-    token = decryptToken(system.api_token_encrypted, encryptionKey);
-  } catch (error) {
-    return;
-  }
+  const token = decryptSystemToken(system, encryptionKey);
+  if (!token) return;
 
-  await syncSystemNameFromPk(system, token, pkClient, db);
+  await refreshSystemName(system, token, pkClient, db);
+  if (!system.switches_enabled) return;
 
-  if (!system.switches_enabled) {
-    return;
-  }
-
-  let latestSwitch = latestSwitchOverride;
-  if (!latestSwitch || !latestSwitch.timestamp) {
-    try {
-      latestSwitch = await pkClient.getLatestSwitch(system.system_id, token);
-    } catch (error) {
-      console.error(`failed to fetch latest switch for ${system.system_id}:`, error.message);
-      return;
-    }
-  }
+  const latestSwitch = await fetchLatestSwitch(system, token, pkClient, latestSwitchOverride);
   if (!latestSwitch?.timestamp) return;
 
-  const rawMembers = Array.isArray(latestSwitch.members) ? latestSwitch.members : [];
-  let resolvedMembers = await hydrateSwitchMembers(rawMembers, token, pkClient);
   const nameMode = system.name_preference || "display";
+  const members = await resolveFrontingMembers(system, latestSwitch, token, pkClient, nameMode);
+  const signature = buildSwitchSignature(latestSwitch, members, nameMode);
 
-  if (!hasRealMemberNames(resolvedMembers, nameMode)) {
-    try {
-      const fronters = await pkClient.getCurrentFronters(system.system_id, token);
-      const hydratedFronters = await hydrateSwitchMembers(fronters, token, pkClient);
-      if (hasRealMemberNames(hydratedFronters, nameMode)) {
-        resolvedMembers = hydratedFronters;
-      }
-    } catch (error) {
-      // Keep resolvedMembers from switch payload if fallback call fails.
-    }
-  }
+  if (db.getLastSwitch(system.system_id)?.last_switch_signature === signature) return;
 
-  const signature = buildSwitchSignature(
-    latestSwitch,
-    resolvedMembers,
-    nameMode
-  );
-  const lastSwitchState = db.getLastSwitch(system.system_id);
-  if (lastSwitchState?.last_switch_signature === signature) {
-    return;
-  }
-
-  const channels = db.listChannels(system.system_id);
-  const enabledChannels = channels.filter((row) => {
-    if (!row.enabled) return false;
-    if (postingGuildScopeId && row.guild_id !== postingGuildScopeId) return false;
-    return true;
-  });
-  if (!enabledChannels.length) {
+  const channels = listPostableChannels(db, system.system_id, postingGuildScopeId);
+  if (!channels.length) {
     db.updateLastSwitch(system.system_id, signature);
     return;
   }
 
-  const embed = buildSwitchEmbed(
-    system.system_name || system.system_id,
-    resolvedMembers,
-    latestSwitch.timestamp,
-    system.timezone || "UTC",
+  const embed = buildSwitchEmbed({
+    systemName: system.system_name || system.system_id,
+    members,
+    timestamp: latestSwitch.timestamp,
+    timezone: system.timezone || "UTC",
     nameMode
-  );
+  });
 
-  let sentCount = 0;
-  for (const row of enabledChannels) {
-    try {
-      const channel = await client.channels.fetch(row.channel_id);
-      if (!channel || !channel.isTextBased()) continue;
-      await channel.send({ embeds: [embed] });
-      sentCount += 1;
-    } catch (error) {
-      console.error(
-        `failed to send ${source} switch for ${system.system_id} to ${row.channel_id}:`,
-        error.message
-      );
-    }
-  }
+  const sent = await sendToChannels({
+    client,
+    channels,
+    embed,
+    systemId: system.system_id,
+    source
+  });
 
-  if (sentCount > 0) {
+  if (sent > 0) {
     db.updateLastSwitch(system.system_id, signature);
     return;
   }
@@ -253,28 +137,15 @@ async function processSystemSwitches(system, deps, options = {}) {
   console.error(`switch relay failed for ${system.system_id}; no channels accepted message`);
 }
 
-function getSystemIdFromWebhookPayload(payload) {
-  return payload?.system?.id || payload?.system_id || payload?.data?.system?.id || null;
-}
-
-function getSwitchFromWebhookPayload(payload) {
-  if (payload?.switch && payload.switch.timestamp) return payload.switch;
-  if (payload?.data?.switch && payload.data.switch.timestamp) return payload.data.switch;
-  if (payload?.timestamp) return payload;
-  return null;
-}
-
 function startSwitchRelay(deps, pollIntervalMs) {
   const pollOnce = async () => {
-    const systems = deps.db.listAllSystems();
-    for (const system of systems) {
+    for (const system of deps.db.listAllSystems()) {
       await processSystemSwitches(system, deps);
     }
   };
 
   const processWebhookPayload = async (payload) => {
-    const systemId = getSystemIdFromWebhookPayload(payload);
-    const incomingSwitch = getSwitchFromWebhookPayload(payload);
+    const systemId = getSystemIdFromPayload(payload);
 
     if (!systemId) {
       await pollOnce();
@@ -285,19 +156,17 @@ function startSwitchRelay(deps, pollIntervalMs) {
     if (!system) return;
 
     await processSystemSwitches(system, deps, {
-      latestSwitchOverride: incomingSwitch,
+      latestSwitchOverride: getSwitchFromPayload(payload),
       source: "webhook"
     });
   };
 
-  pollOnce().catch((error) => {
-    console.error("initial poll failed:", error.message);
-  });
-  const interval = setInterval(() => {
-    pollOnce().catch((error) => {
-      console.error("poll cycle failed:", error.message);
-    });
-  }, pollIntervalMs);
+  const runPoll = (label) => {
+    pollOnce().catch((error) => console.error(`${label}:`, error.message));
+  };
+
+  runPoll("initial poll failed");
+  const interval = setInterval(() => runPoll("poll cycle failed"), pollIntervalMs);
 
   return {
     stop: () => clearInterval(interval),

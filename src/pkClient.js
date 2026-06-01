@@ -1,90 +1,76 @@
 const axios = require("axios");
 
+const TRANSIENT_HTTP_STATUSES = new Set([429, 502, 503, 504]);
+const TRANSIENT_NETWORK_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENETUNREACH",
+  "EAI_AGAIN",
+  "ECONNABORTED"
+]);
+const DEFAULT_BACKOFF_MS = [750, 2000, 4000];
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isTransientPkError(error) {
+function isTransientError(error) {
   const status = error?.response?.status;
-  if (status === 429 || status === 502 || status === 503 || status === 504) {
-    return true;
-  }
-  const code = error?.code;
-  if (
-    code === "ECONNRESET" ||
-    code === "ECONNREFUSED" ||
-    code === "ETIMEDOUT" ||
-    code === "ENETUNREACH" ||
-    code === "EAI_AGAIN" ||
-    code === "ECONNABORTED"
-  ) {
-    return true;
-  }
-  const msg = typeof error?.message === "string" ? error.message : "";
-  return msg.includes("timeout");
+  if (TRANSIENT_HTTP_STATUSES.has(status)) return true;
+  if (TRANSIENT_NETWORK_CODES.has(error?.code)) return true;
+  return String(error?.message || "").includes("timeout");
 }
 
-async function runWithRetries(fn, { maxRetries = 4, backoffMs = [750, 2000, 4000] } = {}) {
+async function withRetries(fn, maxRetries, backoffMs = DEFAULT_BACKOFF_MS) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error) {
-      const canRetry = attempt < maxRetries && isTransientPkError(error);
-      if (!canRetry) throw error;
-      const wait = backoffMs[attempt] ?? backoffMs.at(-1);
-      await delay(wait);
+      if (attempt >= maxRetries || !isTransientError(error)) throw error;
+      await delay(backoffMs[attempt] ?? backoffMs.at(-1));
     }
   }
 }
 
+function authConfig(token, extra = {}) {
+  return { headers: { Authorization: token }, ...extra };
+}
+
 class PKClient {
   constructor(baseUrl, options = {}) {
-    const timeout = Number(options.timeoutMs ?? options.timeout ?? 45000);
-    const maxRetries = Number.isFinite(Number(options.maxRetries))
+    this._maxRetries = Number.isFinite(Number(options.maxRetries))
       ? Math.max(0, Number(options.maxRetries))
       : 4;
 
-    this._maxRetries = maxRetries;
-
     this.http = axios.create({
       baseURL: baseUrl,
-      timeout
+      timeout: Number(options.timeoutMs ?? 45000)
     });
   }
 
-  async _get(url, axiosConfig = {}) {
-    return runWithRetries(() => this.http.get(url, axiosConfig), {
-      maxRetries: this._maxRetries
-    });
+  _get(url, config) {
+    return withRetries(() => this.http.get(url, config), this._maxRetries);
   }
 
-  async getOwnSystem(token) {
-    const response = await this._get("/systems/@me", {
-      headers: { Authorization: token }
-    });
-    return response.data;
+  getOwnSystem(token) {
+    return this._get("/systems/@me", authConfig(token)).then((r) => r.data);
   }
 
-  async getLatestSwitch(systemId, token) {
-    const response = await this._get(`/systems/${systemId}/switches`, {
-      headers: { Authorization: token },
-      params: { limit: 1 }
-    });
-    return response.data?.[0] || null;
+  getLatestSwitch(systemId, token) {
+    return this._get(`/systems/${systemId}/switches`, authConfig(token, { params: { limit: 1 } })).then(
+      (r) => r.data?.[0] || null
+    );
   }
 
-  async getMember(memberId, token) {
-    const response = await this._get(`/members/${memberId}`, {
-      headers: { Authorization: token }
-    });
-    return response.data;
+  getMember(memberId, token) {
+    return this._get(`/members/${memberId}`, authConfig(token)).then((r) => r.data);
   }
 
-  async getCurrentFronters(systemId, token) {
-    const response = await this._get(`/systems/${systemId}/fronters`, {
-      headers: { Authorization: token }
-    });
-    return Array.isArray(response.data?.members) ? response.data.members : [];
+  getCurrentFronters(systemId, token) {
+    return this._get(`/systems/${systemId}/fronters`, authConfig(token)).then((r) =>
+      Array.isArray(r.data?.members) ? r.data.members : []
+    );
   }
 }
 

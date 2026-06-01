@@ -1,81 +1,54 @@
-const { DateTime, IANAZone } = require("luxon");
+const { IANAZone } = require("luxon");
 const { SlashCommandBuilder, ChannelType, MessageFlags } = require("discord.js");
 const { encryptToken } = require("./crypto");
 
+const EPHEMERAL = { flags: MessageFlags.Ephemeral };
+
 function buildCommands() {
+  const textChannel = (name, description) => (opt) =>
+    opt.setName(name).setDescription(description).setRequired(true).addChannelTypes(ChannelType.GuildText);
+
   const linkSystem = new SlashCommandBuilder()
     .setName("link-system")
     .setDescription("link your discord account to a pluralkit system token.")
-    .addStringOption((option) =>
-      option.setName("token").setDescription("pluralkit api token").setRequired(true)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("timezone")
-        .setDescription("optional iana timezone, e.g. America/New_York")
-        .setRequired(false)
+    .addStringOption((o) => o.setName("token").setDescription("pluralkit api token").setRequired(true))
+    .addStringOption((o) =>
+      o.setName("timezone").setDescription("optional iana timezone, e.g. America/New_York").setRequired(false)
     );
 
   const switches = new SlashCommandBuilder()
     .setName("switches")
     .setDescription("manage switch posting behavior and channels.")
-    .addSubcommand((sub) => sub.setName("enable").setDescription("enable switch posting globally."))
-    .addSubcommand((sub) => sub.setName("disable").setDescription("disable switch posting globally."))
-    .addSubcommand((sub) =>
-      sub
-        .setName("add-channel")
-        .setDescription("add a channel for switch posts.")
-        .addChannelOption((opt) =>
-          opt
-            .setName("channel")
-            .setDescription("the channel to add")
-            .setRequired(true)
-            .addChannelTypes(ChannelType.GuildText)
-        )
+    .addSubcommand((s) => s.setName("enable").setDescription("enable switch posting globally."))
+    .addSubcommand((s) => s.setName("disable").setDescription("disable switch posting globally."))
+    .addSubcommand((s) =>
+      s.setName("add-channel").setDescription("add a channel for switch posts.").addChannelOption(textChannel("channel", "the channel to add"))
     )
-    .addSubcommand((sub) =>
-      sub
+    .addSubcommand((s) =>
+      s
         .setName("remove-channel")
         .setDescription("remove a configured channel.")
-        .addChannelOption((opt) =>
-          opt
-            .setName("channel")
-            .setDescription("the channel to remove")
-            .setRequired(true)
-            .addChannelTypes(ChannelType.GuildText)
-        )
+        .addChannelOption(textChannel("channel", "the channel to remove"))
     )
-    .addSubcommand((sub) => sub.setName("list-channels").setDescription("list configured channels."))
-    .addSubcommand((sub) =>
-      sub
+    .addSubcommand((s) => s.setName("list-channels").setDescription("list configured channels."))
+    .addSubcommand((s) =>
+      s
         .setName("enable-channel")
         .setDescription("enable switch posting for a configured channel.")
-        .addChannelOption((opt) =>
-          opt
-            .setName("channel")
-            .setDescription("the channel to enable")
-            .setRequired(true)
-            .addChannelTypes(ChannelType.GuildText)
-        )
+        .addChannelOption(textChannel("channel", "the channel to enable"))
     )
-    .addSubcommand((sub) =>
-      sub
+    .addSubcommand((s) =>
+      s
         .setName("disable-channel")
         .setDescription("disable switch posting for a configured channel.")
-        .addChannelOption((opt) =>
-          opt
-            .setName("channel")
-            .setDescription("the channel to disable")
-            .setRequired(true)
-            .addChannelTypes(ChannelType.GuildText)
-        )
+        .addChannelOption(textChannel("channel", "the channel to disable"))
     )
-    .addSubcommand((sub) =>
-      sub
+    .addSubcommand((s) =>
+      s
         .setName("set-name-mode")
         .setDescription("set whether to show display or registered names.")
-        .addStringOption((opt) =>
-          opt
+        .addStringOption((o) =>
+          o
             .setName("mode")
             .setDescription("choose name mode")
             .setRequired(true)
@@ -89,158 +62,116 @@ function buildCommands() {
   const timezone = new SlashCommandBuilder()
     .setName("timezone")
     .setDescription("manage your switch embed timezone.")
-    .addSubcommand((sub) =>
-      sub
+    .addSubcommand((s) =>
+      s
         .setName("set")
         .setDescription("set your iana timezone.")
-        .addStringOption((option) =>
-          option
-            .setName("value")
-            .setDescription("iana timezone, e.g. Europe/London")
-            .setRequired(true)
-        )
+        .addStringOption((o) => o.setName("value").setDescription("iana timezone, e.g. Europe/London").setRequired(true))
     )
-    .addSubcommand((sub) => sub.setName("get").setDescription("get your currently configured timezone."));
+    .addSubcommand((s) => s.setName("get").setDescription("get your currently configured timezone."));
 
   return [linkSystem, switches, timezone];
 }
 
-function validateTimezone(value) {
+function isValidTimezone(value) {
   return IANAZone.isValidZone(value);
 }
 
 function formatChannelList(rows) {
-  if (!rows.length) {
-    return "no channels configured yet.";
-  }
-
+  if (!rows.length) return "no channels configured yet.";
   const lines = rows.map((row) => `${row.enabled ? "✅" : "🚫"} <#${row.channel_id}>`);
   return `configured channels:\n\n${lines.join("\n")}`;
+}
+
+async function replyEphemeral(interaction, content) {
+  await interaction.reply({ content, ...EPHEMERAL });
 }
 
 async function requireOwnedSystem(interaction, db) {
   const system = db.getSystemByOwner(interaction.user.id);
   if (!system) {
-    await interaction.reply({
-      content: "no linked system found. run `/link-system` first.",
-      flags: MessageFlags.Ephemeral
-    });
+    await replyEphemeral(interaction, "no linked system found. run `/link-system` first.");
     return null;
   }
-
-  if (system.owner_discord_id !== interaction.user.id) {
-    await interaction.reply({
-      content: "you are not the owner of this linked system.",
-      flags: MessageFlags.Ephemeral
-    });
-    return null;
-  }
-
   return system;
 }
 
 async function handleLinkSystem(interaction, db, pkClient, encryptionKey) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferReply(EPHEMERAL);
+
   const token = interaction.options.getString("token", true).trim();
   const timezoneRaw = interaction.options.getString("timezone");
-  const timezone = timezoneRaw ? timezoneRaw.trim() : "UTC";
+  const timezone = timezoneRaw?.trim() || "UTC";
 
-  if (!validateTimezone(timezone)) {
+  if (!isValidTimezone(timezone)) {
     await interaction.editReply("invalid timezone. please provide a valid iana timezone.");
     return;
   }
 
   try {
     const system = await pkClient.getOwnSystem(token);
-    const encryptedToken = encryptToken(token, encryptionKey);
-
     db.upsertSystem({
       systemId: system.id,
       systemName: system.name || null,
       ownerDiscordId: interaction.user.id,
-      apiTokenEncrypted: encryptedToken,
+      apiTokenEncrypted: encryptToken(token, encryptionKey),
       timezone
     });
 
     await interaction.editReply(
       `linked to system **${system.name || system.id}** (${system.id}). timezone set to **${timezone}**.`
     );
-  } catch (error) {
+  } catch {
     await interaction.editReply("failed to validate your pluralkit token. please verify it and try again.");
   }
 }
+
+const SWITCH_HANDLERS = {
+  enable: async (interaction, system, db) => {
+    db.setSwitchesEnabled(system.system_id, true);
+    await replyEphemeral(interaction, "global switch posting enabled. existing channel configs were preserved.");
+  },
+  disable: async (interaction, system, db) => {
+    db.setSwitchesEnabled(system.system_id, false);
+    await replyEphemeral(interaction, "global switch posting disabled. channel configs remain intact.");
+  },
+  "add-channel": async (interaction, system, db) => {
+    const channel = interaction.options.getChannel("channel", true);
+    db.addChannel(system.system_id, channel.id, interaction.guildId || "dm");
+    await replyEphemeral(interaction, `added ${channel} and enabled posting for it.`);
+  },
+  "remove-channel": async (interaction, system, db) => {
+    const channel = interaction.options.getChannel("channel", true);
+    db.removeChannel(system.system_id, channel.id);
+    await replyEphemeral(interaction, `removed ${channel} from your channel config.`);
+  },
+  "enable-channel": async (interaction, system, db) => {
+    const channel = interaction.options.getChannel("channel", true);
+    db.setChannelEnabled(system.system_id, channel.id, true);
+    await replyEphemeral(interaction, `enabled switch posting for ${channel}.`);
+  },
+  "disable-channel": async (interaction, system, db) => {
+    const channel = interaction.options.getChannel("channel", true);
+    db.setChannelEnabled(system.system_id, channel.id, false);
+    await replyEphemeral(interaction, `disabled switch posting for ${channel}.`);
+  },
+  "set-name-mode": async (interaction, system, db) => {
+    const mode = interaction.options.getString("mode", true);
+    db.setNamePreference(system.system_id, mode);
+    await replyEphemeral(interaction, `member name mode set to **${mode}**.`);
+  },
+  "list-channels": async (interaction, system, db) => {
+    await replyEphemeral(interaction, formatChannelList(db.listChannels(system.system_id)));
+  }
+};
 
 async function handleSwitches(interaction, db) {
   const sub = interaction.options.getSubcommand();
   const system = await requireOwnedSystem(interaction, db);
   if (!system) return;
 
-  if (sub === "enable") {
-    db.setSwitchesEnabled(system.system_id, true);
-    await interaction.reply({
-      content: "global switch posting enabled. existing channel configs were preserved.",
-      flags: MessageFlags.Ephemeral
-    });
-    return;
-  }
-
-  if (sub === "disable") {
-    db.setSwitchesEnabled(system.system_id, false);
-    await interaction.reply({
-      content: "global switch posting disabled. channel configs remain intact.",
-      flags: MessageFlags.Ephemeral
-    });
-    return;
-  }
-
-  if (sub === "add-channel") {
-    const channel = interaction.options.getChannel("channel", true);
-    db.addChannel(system.system_id, channel.id, interaction.guildId || "dm");
-    await interaction.reply({
-      content: `added ${channel} and enabled posting for it.`,
-      flags: MessageFlags.Ephemeral
-    });
-    return;
-  }
-
-  if (sub === "remove-channel") {
-    const channel = interaction.options.getChannel("channel", true);
-    db.removeChannel(system.system_id, channel.id);
-    await interaction.reply({
-      content: `removed ${channel} from your channel config.`,
-      flags: MessageFlags.Ephemeral
-    });
-    return;
-  }
-
-  if (sub === "enable-channel" || sub === "disable-channel") {
-    const channel = interaction.options.getChannel("channel", true);
-    const isEnable = sub === "enable-channel";
-    db.setChannelEnabled(system.system_id, channel.id, isEnable);
-    await interaction.reply({
-      content: `${isEnable ? "enabled" : "disabled"} switch posting for ${channel}.`,
-      flags: MessageFlags.Ephemeral
-    });
-    return;
-  }
-
-  if (sub === "set-name-mode") {
-    const mode = interaction.options.getString("mode", true);
-    db.setNamePreference(system.system_id, mode);
-    await interaction.reply({
-      content: `member name mode set to **${mode}**.`,
-      flags: MessageFlags.Ephemeral
-    });
-    return;
-  }
-
-  if (sub === "list-channels") {
-    const rows = db.listChannels(system.system_id);
-    await interaction.reply({
-      content: formatChannelList(rows),
-      flags: MessageFlags.Ephemeral
-    });
-  }
+  const handler = SWITCH_HANDLERS[sub];
+  if (handler) await handler(interaction, system, db);
 }
 
 async function handleTimezone(interaction, db) {
@@ -250,70 +181,53 @@ async function handleTimezone(interaction, db) {
 
   if (sub === "get") {
     const mode = system.name_preference || "display";
-    await interaction.reply({
-      content: `current timezone: **${system.timezone || "UTC"}**\ncurrent member name mode: **${mode}**`,
-      flags: MessageFlags.Ephemeral
-    });
+    await replyEphemeral(
+      interaction,
+      `current timezone: **${system.timezone || "UTC"}**\ncurrent member name mode: **${mode}**`
+    );
     return;
   }
 
   const value = interaction.options.getString("value", true).trim();
-  if (!validateTimezone(value)) {
-    await interaction.reply({
-      content: "invalid timezone. please provide a valid iana timezone.",
-      flags: MessageFlags.Ephemeral
-    });
+  if (!isValidTimezone(value)) {
+    await replyEphemeral(interaction, "invalid timezone. please provide a valid iana timezone.");
     return;
   }
 
   db.setTimezone(system.system_id, value);
-  await interaction.reply({
-    content: `timezone updated to **${value}**.`,
-    flags: MessageFlags.Ephemeral
-  });
+  await replyEphemeral(interaction, `timezone updated to **${value}**.`);
 }
 
+const COMMAND_HANDLERS = {
+  "link-system": (interaction, deps) =>
+    handleLinkSystem(interaction, deps.db, deps.pkClient, deps.encryptionKey),
+  switches: (interaction, deps) => handleSwitches(interaction, deps.db),
+  timezone: (interaction, deps) => handleTimezone(interaction, deps.db)
+};
+
 async function handleInteraction(interaction, deps) {
-  const { db, pkClient, encryptionKey } = deps;
   if (!interaction.isChatInputCommand()) return;
 
+  const handler = COMMAND_HANDLERS[interaction.commandName];
+  if (!handler) return;
+
   try {
-    if (interaction.commandName === "link-system") {
-      await handleLinkSystem(interaction, db, pkClient, encryptionKey);
-      return;
-    }
-
-    if (interaction.commandName === "switches") {
-      await handleSwitches(interaction, db);
-      return;
-    }
-
-    if (interaction.commandName === "timezone") {
-      await handleTimezone(interaction, db);
-    }
-  } catch (error) {
+    await handler(interaction, deps);
+  } catch {
     const content = "unexpected error while handling command.";
     try {
       if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
-        return;
+        await interaction.followUp({ content, ...EPHEMERAL });
+      } else {
+        await interaction.reply({ content, ...EPHEMERAL });
       }
-      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
-    } catch (responseError) {
-      // Prevent handler-level response failures from crashing the process.
+    } catch {
+      // ignore response errors
     }
   }
 }
 
-function formatSwitchTime(timestamp, timezone) {
-  return DateTime.fromISO(timestamp)
-    .setZone(timezone || "UTC")
-    .toFormat("MMM d, yyyy, h:mm a")
-    .toLowerCase();
-}
-
 module.exports = {
   buildCommands,
-  handleInteraction,
-  formatSwitchTime
+  handleInteraction
 };
