@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require("discord.js");
 const { formatSwitchTime } = require("./format");
+const { FIELD_LABEL } = require("./intStatus");
 
 const UNKNOWN_MEMBER = "unknown member";
 
@@ -55,14 +56,20 @@ function parseEmbedColor(color) {
   return Number.parseInt(hex, 16);
 }
 
-function buildSwitchEmbed({ systemName, members, timestamp, timezone, nameMode }) {
+function buildSwitchEmbed({ systemName, members, timestamp, timezone, nameMode, interactionStatus }) {
   const fronting = members.map((m) => resolveMemberName(m, nameMode)).join(", ") || "unknown";
   const lead = firstMemberObject(members);
+
+  const fields = [];
+  if (interactionStatus) {
+    fields.push({ name: FIELD_LABEL, value: interactionStatus });
+  }
+  fields.push({ name: "time", value: formatSwitchTime(timestamp, timezone) });
 
   const embed = new EmbedBuilder()
     .setTitle(systemName || "pluralkit system")
     .setDescription(`**now fronting**\n${fronting}`)
-    .addFields({ name: "time", value: formatSwitchTime(timestamp, timezone) });
+    .addFields(fields);
 
   const color = parseEmbedColor(lead?.color);
   if (color !== null) embed.setColor(color);
@@ -71,13 +78,14 @@ function buildSwitchEmbed({ systemName, members, timestamp, timezone, nameMode }
   return embed;
 }
 
-function buildSwitchSignature(switchPayload, members, nameMode) {
-  if (switchPayload?.id) return `id:${switchPayload.id}`;
+function buildSwitchSignature(switchPayload, members, nameMode, statusRevision = 0) {
+  const revision = `|status_rev:${statusRevision || 0}`;
+  if (switchPayload?.id) return `id:${switchPayload.id}${revision}`;
 
   const timestamp = switchPayload?.timestamp || "unknown";
   const ids = members.map((m) => memberId(m) || "unknown").join(",");
   const names = members.map((m) => resolveMemberName(m, nameMode)).join(",");
-  return `ts:${timestamp}|members:${ids}|names:${names}`;
+  return `ts:${timestamp}|members:${ids}|names:${names}${revision}`;
 }
 
 function membersHaveNames(members, nameMode) {

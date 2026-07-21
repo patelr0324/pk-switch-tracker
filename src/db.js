@@ -34,6 +34,8 @@ class BotDatabase {
 
     for (const system of this.data.systems) {
       if (!system.name_preference) system.name_preference = "display";
+      if (system.interaction_status === undefined) system.interaction_status = null;
+      if (system.interaction_status_revision === undefined) system.interaction_status_revision = 0;
     }
 
     for (const entry of this.data.last_switch) {
@@ -94,7 +96,9 @@ class BotDatabase {
         api_token_encrypted: apiTokenEncrypted,
         switches_enabled: 0,
         timezone,
-        name_preference: namePreference
+        name_preference: namePreference,
+        interaction_status: null,
+        interaction_status_revision: 0
       });
     }
 
@@ -131,6 +135,32 @@ class BotDatabase {
 
     system.system_name = next;
     this.flush();
+  }
+
+  _bumpInteractionStatusRevision(system) {
+    system.interaction_status_revision = (system.interaction_status_revision || 0) + 1;
+  }
+
+  setInteractionStatus(systemId, value) {
+    const system = this.getSystemById(systemId);
+    if (!system) return { ok: false, changed: false };
+    if (system.interaction_status === value) return { ok: true, changed: false };
+
+    system.interaction_status = value;
+    this._bumpInteractionStatusRevision(system);
+    this.flush();
+    return { ok: true, changed: true };
+  }
+
+  clearInteractionStatus(systemId) {
+    const system = this.getSystemById(systemId);
+    if (!system) return { ok: false, changed: false };
+    if (!system.interaction_status) return { ok: true, changed: false };
+
+    system.interaction_status = null;
+    this._bumpInteractionStatusRevision(system);
+    this.flush();
+    return { ok: true, changed: true };
   }
 
   addChannel(systemId, channelId, guildId) {

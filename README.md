@@ -13,6 +13,7 @@ a discord bot that watches [pluralkit](https://pluralkit.me) systems for front c
 - **live system name sync** — system display names refresh from pluralkit on each poll
 - **resilient pk api client** — configurable timeout and retries for slow or flaky api responses
 - **optional webhook listener** — accept switch payloads over http when you have an integration that forwards them
+- **custom int status** — set optional status text on switch embeds via `/int-status`
 - **dev mode** — restrict switch posting to a single test guild while developing
 
 ## requirements
@@ -168,7 +169,7 @@ manage posting (requires a linked system).
 1. `/link-system` with your pk token  
 2. `/switches enable`  
 3. `/switches add-channel` for each destination channel  
-4. optionally `/switches set-name-mode` and `/timezone set`
+4. optionally `/switches set-name-mode`, `/timezone set`, or `/int-status set`
 
 ### `/timezone`
 
@@ -176,6 +177,19 @@ manage posting (requires a linked system).
 |------------|-------------|
 | `set` | set iana timezone for embed timestamps |
 | `get` | show current timezone and member name mode |
+
+### `/int-status`
+
+set or clear custom status text shown on switch embeds as an **int status** field (above **time**).
+
+| subcommand | description |
+|------------|-------------|
+| `set` | set status text (max 400 characters) |
+| `clear` | remove your int status |
+
+changing or clearing your status bumps an internal revision so the **latest switch reposts** on the next poll cycle with the updated embed. this is not instant — it happens on the next successful poll (default every 30 seconds). clearing removes the field from future reposts.
+
+> after adding this command for the first time, run `npm run register-commands` and restart the bot.
 
 ---
 
@@ -201,10 +215,10 @@ flowchart LR
   Sig -->|unchanged| Skip[skip post]
 ```
 
-1. **polling** — on an interval, the bot checks every linked system that has posting enabled. it fetches the latest switch from pluralkit and compares a signature (switch id, or timestamp + members + names) to the last posted switch.
+1. **polling** — on an interval, the bot checks every linked system that has posting enabled. it fetches the latest switch from pluralkit and compares a signature (switch id, or timestamp + members + names, plus interaction status revision) to the last posted switch.
 2. **webhooks** — a small http server accepts `POST` requests on `WEBHOOK_PATH`. if the payload includes a system id and switch data, that system is processed immediately; otherwise a full poll runs.
-3. **embeds** — title uses the pk system name. body lists fronting members. thumbnail/color come from the first member (if applicable). the order of members will mimic the order put in while switching on pluralkit.
-4. **deduplication** — the same switch is not posted twice. if no channel accepts the message, the signature is not advanced (so a later retry can still post).
+3. **embeds** — title uses the pk system name. body lists fronting members. an optional **int status** field (above **time**) appears when set via `/int-status`. thumbnail/color come from the first member (if applicable). the order of members will mimic the order put in while switching on pluralkit.
+4. **deduplication** — the same switch is not posted twice. changing your int status counts as a change and reposts the latest switch. if no channel accepts the message, the signature is not advanced (so a later retry can still post).
 
 the relay pipeline lives in `switchWorker.js` (poll loop, dedup, discord posting). member lookup, embed building, and switch signatures live in `members.js`. pluralkit http calls go through `pkClient.js` (timeouts + retries on transient errors).
 
@@ -254,7 +268,7 @@ use this to test without posting to production servers. you also don't need to w
 
 - state is stored in a json file at `DATABASE_PATH` (not sqlite).
 - the `data/` directory is gitignored. back up your database file and `TOKEN_ENCRYPTION_KEY` together when migrating hosts.
-- stored fields include encrypted api tokens, channel mappings, last switch signatures, timezones, and preferences.
+- stored fields include encrypted api tokens, channel mappings, last switch signatures, timezones, preferences, and int status (`interaction_status` + `interaction_status_revision`).
 
 **do not commit** `.env` or your database file.
 
@@ -325,13 +339,14 @@ higher poll intervals reduce api load but increase detection delay.
 | problem | things to check |
 |---------|------------------|
 | slash commands missing | run `npm run register-commands`; wait for global propagation or use dev guild + `DEV_MODE=true` |
-| bot online but no posts | `/switches enable`, channel added, channel enabled (✅ in `list-channels`), global disable off |
+| bot online but no posts | `/switches enable`, channel added, channel enabled, global disable off |
 | posts in wrong server during testing | `DEV_MODE` and `DISCORD_GUILD_ID` |
 | `Missing required environment variable` | `.env` in project root; required vars set |
 | `failed to validate pluralkit token` | token copied correctly; pk account has api access |
 | embeds fail in one channel | bot permissions in that channel; channel still exists |
 | duplicate posts after bot downtime | rare edge case if signature was not saved; usually self-corrects on next switch |
 | old system name on embeds | wait one poll cycle after renaming on pk, or re-run `/link-system` |
+| int status didn't repost | wait for next poll; ensure `/switches enable` and at least one channel is enabled |
 | timeout / econnreset errors | raise `PK_API_TIMEOUT_MS` or `PK_API_MAX_RETRIES`; check network to `api.pluralkit.me` |
 
 ---
@@ -348,6 +363,7 @@ pk-switch-tracker/
 │   ├── registerCommands.js  # one-off script to register slash commands with discord
 │   ├── switchWorker.js      # poll loop, system name sync, dedup, post to channels
 │   ├── members.js           # member name resolution, hydration, embeds, signatures
+│   ├── intStatus.js         # int status validation and embed field label
 │   ├── format.js            # switch timestamp formatting for embeds
 │   ├── pkClient.js          # pluralkit api client (timeout, retries)
 │   ├── webhookServer.js     # optional http listener for incoming switch payloads
@@ -366,10 +382,11 @@ pk-switch-tracker/
 | `index.js` | wires discord, database, pk client, relay, and webhook server together |
 | `switchWorker.js` | per-system poll/webhook handling: decrypt token → refresh name → fetch switch → post |
 | `members.js` | resolve/hydrate fronting members and build the discord embed |
+| `intStatus.js` | int status text validation, length limits, embed field label |
 | `pkClient.js` | all pluralkit `GET` requests; retries on timeouts, connection resets, 429, 502–504 |
 | `webhookServer.js` | `POST` handler on `WEBHOOK_PORT` + `WEBHOOK_PATH` |
 | `webhookPayload.js` | extract `system_id` and switch object from webhook body shapes |
-| `commands.js` | `/link-system`, `/switches`, `/timezone` |
+| `commands.js` | `/link-system`, `/switches`, `/timezone`, `/int-status` |
 | `db.js` | read/write `DATABASE_PATH` json (systems, channels, dedup state) |
 
 ---

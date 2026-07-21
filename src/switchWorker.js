@@ -103,7 +103,8 @@ async function processSystemSwitches(system, deps, options = {}) {
 
   const nameMode = system.name_preference || "display";
   const members = await resolveFrontingMembers(system, latestSwitch, token, pkClient, nameMode);
-  const signature = buildSwitchSignature(latestSwitch, members, nameMode);
+  const statusRevision = system.interaction_status_revision || 0;
+  const signature = buildSwitchSignature(latestSwitch, members, nameMode, statusRevision);
 
   if (db.getLastSwitch(system.system_id)?.last_switch_signature === signature) return;
 
@@ -118,7 +119,8 @@ async function processSystemSwitches(system, deps, options = {}) {
     members,
     timestamp: latestSwitch.timestamp,
     timezone: system.timezone || "UTC",
-    nameMode
+    nameMode,
+    interactionStatus: system.interaction_status || null
   });
 
   const sent = await sendToChannels({

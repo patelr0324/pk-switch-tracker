@@ -1,6 +1,7 @@
 const { IANAZone } = require("luxon");
 const { SlashCommandBuilder, ChannelType, MessageFlags } = require("discord.js");
 const { encryptToken } = require("./crypto");
+const { validateForSet } = require("./intStatus");
 
 const EPHEMERAL = { flags: MessageFlags.Ephemeral };
 
@@ -70,7 +71,20 @@ function buildCommands() {
     )
     .addSubcommand((s) => s.setName("get").setDescription("get your currently configured timezone."));
 
-  return [linkSystem, switches, timezone];
+  const intStatus = new SlashCommandBuilder()
+    .setName("int-status")
+    .setDescription("manage your custom interaction status on switch embeds.")
+    .addSubcommand((s) =>
+      s
+        .setName("set")
+        .setDescription("set a custom interaction status.")
+        .addStringOption((o) =>
+          o.setName("status").setDescription("the status text to show on switch embeds").setRequired(true)
+        )
+    )
+    .addSubcommand((s) => s.setName("clear").setDescription("clear your interaction status."));
+
+  return [linkSystem, switches, timezone, intStatus];
 }
 
 function isValidTimezone(value) {
@@ -198,11 +212,43 @@ async function handleTimezone(interaction, db) {
   await replyEphemeral(interaction, `timezone updated to **${value}**.`);
 }
 
+async function handleIntStatus(interaction, db) {
+  const sub = interaction.options.getSubcommand();
+  const system = await requireOwnedSystem(interaction, db);
+  if (!system) return;
+
+  if (sub === "clear") {
+    const result = db.clearInteractionStatus(system.system_id);
+    if (!result.ok) return;
+
+    const message = result.changed
+      ? "interaction status cleared. the latest switch will repost on the next poll without it."
+      : "no interaction status was set.";
+    await replyEphemeral(interaction, message);
+    return;
+  }
+
+  const validation = validateForSet(interaction.options.getString("status", true));
+  if (!validation.ok) {
+    await replyEphemeral(interaction, validation.message);
+    return;
+  }
+
+  const result = db.setInteractionStatus(system.system_id, validation.status);
+  if (!result.ok) return;
+
+  const message = result.changed
+    ? `interaction status set to **${validation.status}**. the latest switch will repost on the next poll with it.`
+    : "that interaction status is already set.";
+  await replyEphemeral(interaction, message);
+}
+
 const COMMAND_HANDLERS = {
   "link-system": (interaction, deps) =>
     handleLinkSystem(interaction, deps.db, deps.pkClient, deps.encryptionKey),
   switches: (interaction, deps) => handleSwitches(interaction, deps.db),
-  timezone: (interaction, deps) => handleTimezone(interaction, deps.db)
+  timezone: (interaction, deps) => handleTimezone(interaction, deps.db),
+  "int-status": (interaction, deps) => handleIntStatus(interaction, deps.db)
 };
 
 async function handleInteraction(interaction, deps) {
