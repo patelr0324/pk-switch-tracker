@@ -26,12 +26,12 @@ function getKeyBuffer(rawKey) {
   );
 }
 
-function encryptToken(token, rawKey) {
+function encryptString(value, rawKey) {
   const key = getKeyBuffer(rawKey);
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
 
-  const encrypted = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
 
   return `${iv.toString("base64")}.${tag.toString("base64")}.${encrypted.toString(
@@ -39,10 +39,10 @@ function encryptToken(token, rawKey) {
   )}`;
 }
 
-function decryptToken(payload, rawKey) {
+function decryptString(payload, rawKey) {
   const [ivPart, tagPart, encryptedPart] = payload.split(".");
   if (!ivPart || !tagPart || !encryptedPart) {
-    throw new Error("Invalid encrypted token format.");
+    throw new Error("Invalid encrypted payload format.");
   }
 
   const key = getKeyBuffer(rawKey);
@@ -58,6 +58,8 @@ function decryptToken(payload, rawKey) {
 }
 
 module.exports = {
-  encryptToken,
-  decryptToken
+  encryptString,
+  decryptString,
+  encryptToken: encryptString,
+  decryptToken: decryptString
 };

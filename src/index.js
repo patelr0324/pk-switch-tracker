@@ -6,7 +6,7 @@ const { handleInteraction } = require("./commands");
 const { startSwitchRelay } = require("./switchWorker");
 const { startWebhookServer } = require("./webhookServer");
 
-const db = new BotDatabase(config.databasePath);
+const db = new BotDatabase(config.databasePath, config.tokenEncryptionKey);
 const pkClient = new PKClient(config.pkApiBase, {
   timeoutMs: config.pkApiTimeoutMs,
   maxRetries: config.pkApiMaxRetries

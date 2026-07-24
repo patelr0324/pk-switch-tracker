@@ -2,6 +2,8 @@
 
 a discord bot that watches [pluralkit](https://pluralkit.me) systems for front changes and posts switch embeds to channels you configure. each user links their own pk api token. the bot stores it (encrypted) and polls pluralkit (optional http webhook).
 
+*note:* there may be code segments that use the name puppyk. this is what my instance of the bot is named (invite link coming soon!). be sure to change as needed!
+
 ## features
 
 - **per-user linking** — one pluralkit system per discord account via `/link-system`
@@ -14,11 +16,12 @@ a discord bot that watches [pluralkit](https://pluralkit.me) systems for front c
 - **resilient pk api client** — configurable timeout and retries for slow or flaky api responses
 - **optional webhook listener** — accept switch payloads over http when you have an integration that forwards them
 - **custom int status** — set optional status text on switch embeds via `/int-status`
+- **encrypted at rest** — pk tokens, system names, and int status stored encrypted in sqlite
 - **dev mode** — restrict switch posting to a single test guild while developing
 
 ## requirements
 
-- **node.js** 20 or newer
+- **node.js** 22.5 or newer (uses built-in `node:sqlite`)
 - a discord application with a bot user
 - network access to `discord.com` and `api.pluralkit.me`
 
@@ -70,7 +73,7 @@ generate a 32-byte encryption key:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-put the output in `TOKEN_ENCRYPTION_KEY`. if you lose this, stored tokens cannot be decrypted and users must run `/link-system` again.
+put the output in `TOKEN_ENCRYPTION_KEY`. if you lose this, stored tokens and encrypted fields cannot be decrypted and users must run `/link-system` again.
 
 ### 5. register slash commands
 
@@ -101,14 +104,14 @@ all settings are loaded from `.env` via `dotenv`. see `.env.example` for a templ
 |----------|-------------|
 | `DISCORD_TOKEN` | bot token from the developer portal |
 | `DISCORD_CLIENT_ID` | application (client) id |
-| `TOKEN_ENCRYPTION_KEY` | 32-byte key: 64-char hex, 32-byte base64, or exactly 32 utf-8 characters. used to encrypt pk api tokens in the database file. |
+| `TOKEN_ENCRYPTION_KEY` | 32-byte key: 64-char hex, 32-byte base64, or exactly 32 utf-8 characters. used to encrypt pk api tokens, system names, and int status at rest. |
 
 ### optional
 
 | variable | default | description |
 |----------|---------|-------------|
 | `DISCORD_GUILD_ID` | _(empty)_ | guild id for dev-scoped command registration and dev-mode posting filter |
-| `DATABASE_PATH` | `./data/bot.db` | path to the json database file (resolved from project root). example setups often use `./data/bot-data.json`. |
+| `DATABASE_PATH` | `./data/bot.db` | path to the sqlite database file (resolved from project root). if it still ends in `.json`, a sibling `.db` is used and the json is imported once when empty. |
 | `PK_API_BASE` | `https://api.pluralkit.me/v2` | pluralkit api base url |
 | `PK_API_TIMEOUT_MS` | `45000` | http timeout per pk request (milliseconds) |
 | `PK_API_MAX_RETRIES` | `4` | extra retry attempts on transient errors (timeouts, connection resets, 429, 502–504) |
@@ -125,7 +128,7 @@ DISCORD_TOKEN=your_bot_token
 DISCORD_CLIENT_ID=1234567890123456789
 DISCORD_GUILD_ID=9876543210987654321
 TOKEN_ENCRYPTION_KEY=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
-DATABASE_PATH=./data/bot-data.json
+DATABASE_PATH=./data/bot.db
 POLL_INTERVAL_MS=30000
 PK_API_TIMEOUT_MS=45000
 PK_API_MAX_RETRIES=4
@@ -266,9 +269,12 @@ use this to test without posting to production servers. you also don't need to w
 
 ## data storage
 
-- state is stored in a json file at `DATABASE_PATH` (not sqlite).
-- the `data/` directory is gitignored. back up your database file and `TOKEN_ENCRYPTION_KEY` together when migrating hosts.
-- stored fields include encrypted api tokens, channel mappings, last switch signatures, timezones, preferences, and int status (`interaction_status` + `interaction_status_revision`).
+- state is a local sqlite file at `DATABASE_PATH` (default `./data/bot.db`), using node’s built-in `node:sqlite` (node `>=22.5`).
+- encrypted at rest with `TOKEN_ENCRYPTION_KEY`: pk api tokens, `system_name`, `interaction_status`.
+- plaintext: discord ids, channel mappings, enable flags, timezones, name preference, last-switch signatures, revision counters.
+- legacy json: if the db is empty and `bot-data.json` is present next to it (or `DATABASE_PATH` still ends in `.json`), it is imported once and renamed to `*.json.bak`.
+- the `data/` directory is gitignored. when moving hosts, copy the db file **and** use the same `TOKEN_ENCRYPTION_KEY`.
+- on panel hosts, set secrets in env vars — do not upload `.env` with tokens in it.
 
 **do not commit** `.env` or your database file.
 
@@ -305,6 +311,7 @@ pm2 restart pk-switch-tracker
 | `failed to send ... switch` | discord permission or missing channel |
 | `switch relay failed ... no channels accepted` | no enabled channel could receive the message |
 | `webhook port ... already in use` | webhook disabled; polling still runs |
+| `migrated legacy json database ...` | one-time import from `bot-data.json` into sqlite completed |
 | `dev mode enabled: posting scoped to guild` | dev mode active |
 
 ### tuning api reliability
@@ -329,7 +336,7 @@ higher poll intervals reduce api load but increase detection delay.
 | secret | action |
 |--------|--------|
 | discord bot token | reset in developer portal, update `.env`, restart |
-| `TOKEN_ENCRYPTION_KEY` | generate new key, restart — **all users must `/link-system` again** |
+| `TOKEN_ENCRYPTION_KEY` | generate new key, restart — **all users must `/link-system` again** (names/status in the old db also become unreadable) |
 | user pk token | user runs `/link-system` with a new token |
 
 ---
@@ -348,6 +355,7 @@ higher poll intervals reduce api load but increase detection delay.
 | old system name on embeds | wait one poll cycle after renaming on pk, or re-run `/link-system` |
 | int status didn't repost | wait for next poll; ensure `/switches enable` and at least one channel is enabled |
 | timeout / econnreset errors | raise `PK_API_TIMEOUT_MS` or `PK_API_MAX_RETRIES`; check network to `api.pluralkit.me` |
+| decrypt / invalid encrypted payload errors | `TOKEN_ENCRYPTION_KEY` must match the key used when the db was written; restore the old key or have users `/link-system` again |
 
 ---
 
@@ -368,8 +376,8 @@ pk-switch-tracker/
 │   ├── pkClient.js          # pluralkit api client (timeout, retries)
 │   ├── webhookServer.js     # optional http listener for incoming switch payloads
 │   ├── webhookPayload.js    # parses webhook json into system/switch ids
-│   ├── db.js                # json file database (systems, channels, last switch)
-│   └── crypto.js            # encrypt/decrypt pk tokens at rest (aes-256-gcm)
+│   ├── db.js                # sqlite database (systems, channels, last switch)
+│   └── crypto.js            # encrypt/decrypt sensitive fields at rest (aes-256-gcm)
 ├── .env.example
 ├── package.json
 └── README.md
@@ -387,17 +395,17 @@ pk-switch-tracker/
 | `webhookServer.js` | `POST` handler on `WEBHOOK_PORT` + `WEBHOOK_PATH` |
 | `webhookPayload.js` | extract `system_id` and switch object from webhook body shapes |
 | `commands.js` | `/link-system`, `/switches`, `/timezone`, `/int-status` |
-| `db.js` | read/write `DATABASE_PATH` json (systems, channels, dedup state) |
+| `db.js` | sqlite at `DATABASE_PATH` (systems, channels, dedup state; encrypts names/status) |
 
 ---
 
 
 ## security notes
 
-- pluralkit api tokens are encrypted at rest with `TOKEN_ENCRYPTION_KEY`.
+- pluralkit api tokens, system names, and int status are encrypted at rest with `TOKEN_ENCRYPTION_KEY`.
 - tokens are sent only to pluralkit over https during polls.
 - slash command replies for linking are ephemeral so tokens are not broadcast to the channel.
-- run the bot on infrastructure you trust; anyone with server filesystem access can read `.env` and the database.
+- run the bot on infrastructure you trust; anyone with server filesystem *and* env access can decrypt. a leaked db file alone is not enough without the key.
 - use `WEBHOOK_SECRET` if the webhook port is reachable from a network.
 
 ---

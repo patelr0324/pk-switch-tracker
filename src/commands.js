@@ -84,7 +84,11 @@ function buildCommands() {
     )
     .addSubcommand((s) => s.setName("clear").setDescription("clear your interaction status."));
 
-  return [linkSystem, switches, timezone, intStatus];
+  const help = new SlashCommandBuilder()
+    .setName("help")
+    .setDescription("list available commands and how to get started.");
+
+  return [linkSystem, switches, timezone, intStatus, help];
 }
 
 function isValidTimezone(value) {
@@ -243,12 +247,39 @@ async function handleIntStatus(interaction, db) {
   await replyEphemeral(interaction, message);
 }
 
+const HELP_TEXT = [
+  "**puppyk** — posts pluralkit front changes to discord.",
+  "",
+  "**setup**",
+  "1. `/link-system` — link your pk api token (optional timezone)",
+  "2. `/switches enable` — turn on posting",
+  "3. `/switches add-channel` — pick what channels to post to using the channel id (bot must be in the server)",
+  "",
+  "**commands**",
+  "`/link-system` — link or update your pluralkit system",
+  "`/switches` — enable/disable posting, manage channels, set name mode",
+  "  · `enable` / `disable` — global posting (all servers) on/off",
+  "  · `add-channel` / `remove-channel` / `list-channels` — configure channels to post to",
+  "  · `enable-channel` / `disable-channel` — enable/disable posting for a specific channel",
+  "  · `set-name-mode` — `display` or `registered` — show display or registered names on switch embeds",
+  "`/timezone set|get` — iana timezone for embed timestamps",
+  "`/int-status set|clear` — optional status text on switch embeds (e.g. 'iwc', 'dni', etc)",
+  "`/help` — show this message",
+  "",
+  "replies are ephemeral (only you see them)."
+].join("\n");
+
+async function handleHelp(interaction) {
+  await replyEphemeral(interaction, HELP_TEXT);
+}
+
 const COMMAND_HANDLERS = {
   "link-system": (interaction, deps) =>
     handleLinkSystem(interaction, deps.db, deps.pkClient, deps.encryptionKey),
   switches: (interaction, deps) => handleSwitches(interaction, deps.db),
   timezone: (interaction, deps) => handleTimezone(interaction, deps.db),
-  "int-status": (interaction, deps) => handleIntStatus(interaction, deps.db)
+  "int-status": (interaction, deps) => handleIntStatus(interaction, deps.db),
+  help: (interaction) => handleHelp(interaction)
 };
 
 async function handleInteraction(interaction, deps) {
