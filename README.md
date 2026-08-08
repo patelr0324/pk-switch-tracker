@@ -2,7 +2,7 @@
 
 a discord bot that watches [pluralkit](https://pluralkit.me) systems for front changes and posts switch embeds to channels you configure. each user links their own pk api token. the bot stores it (encrypted) and polls pluralkit (optional http webhook).
 
-*note:* there may be code segments that use the name puppyk. this is what my instance of the bot is named (invite link coming soon!). be sure to change as needed!
+*note:* there may be code segments that use the name puppyk. this is what my instance of the bot is named ([invite link!](https://discord.com/api/oauth2/authorize?client_id=1494044928412487814&permissions=19456&scope=bot%20applications.commands)). be sure to change as needed!
 
 ## features
 
