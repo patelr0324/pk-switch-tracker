@@ -6,7 +6,7 @@ a discord bot that watches [pluralkit](https://pluralkit.me) systems for front c
 
 ## features
 
-- **per-user linking** — one pluralkit system per discord account via `/link-system`
+- **per-user linking** — one pluralkit system per discord account via `/link-system` (unlink with `/unlink-system`)
 - **multi-channel routing** — post the same switch to multiple guild channels
 - **per-channel enable/disable** — keep overall channel configs while toggling individual channel config
 - **global on/off** — pause all posting without losing settings
@@ -151,6 +151,12 @@ links your discord account to a pluralkit system.
 | `timezone` | no | iana timezone (e.g. `America/Chicago`). defaults to `UTC` |
 
 re-running this updates your token, timezone, and system metadata. each discord user can link one system only.
+
+### `/unlink-system`
+
+unlinks your discord account from the stored pluralkit system. deletes your encrypted token, channel configs, timezone/name preference, int status, and last-switch state. posting stops immediately.
+
+> after adding this command for the first time, run `npm run register-commands` and restart the bot.
 
 ### `/switches`
 
@@ -394,7 +400,7 @@ pk-switch-tracker/
 | `pkClient.js` | all pluralkit `GET` requests; retries on timeouts, connection resets, 429, 502–504 |
 | `webhookServer.js` | `POST` handler on `WEBHOOK_PORT` + `WEBHOOK_PATH` |
 | `webhookPayload.js` | extract `system_id` and switch object from webhook body shapes |
-| `commands.js` | `/link-system`, `/switches`, `/timezone`, `/int-status` |
+| `commands.js` | `/link-system`, `/unlink-system`, `/switches`, `/timezone`, `/int-status` |
 | `db.js` | sqlite at `DATABASE_PATH` (systems, channels, dedup state; encrypts names/status) |
 
 ---

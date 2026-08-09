@@ -17,6 +17,10 @@ function buildCommands() {
       o.setName("timezone").setDescription("optional iana timezone, e.g. America/New_York").setRequired(false)
     );
 
+  const unlinkSystem = new SlashCommandBuilder()
+    .setName("unlink-system")
+    .setDescription("unlink your pluralkit system and delete stored token and settings.");
+
   const switches = new SlashCommandBuilder()
     .setName("switches")
     .setDescription("manage switch posting behavior and channels.")
@@ -88,7 +92,7 @@ function buildCommands() {
     .setName("help")
     .setDescription("list available commands and how to get started.");
 
-  return [linkSystem, switches, timezone, intStatus, help];
+  return [linkSystem, unlinkSystem, switches, timezone, intStatus, help];
 }
 
 function isValidTimezone(value) {
@@ -142,6 +146,18 @@ async function handleLinkSystem(interaction, db, pkClient, encryptionKey) {
   } catch {
     await interaction.editReply("failed to validate your pluralkit token. please verify it and try again.");
   }
+}
+
+async function handleUnlinkSystem(interaction, db) {
+  const system = await requireOwnedSystem(interaction, db);
+  if (!system) return;
+
+  const label = system.system_name || system.system_id;
+  db.unlinkSystem(system.system_id);
+  await replyEphemeral(
+    interaction,
+    `unlinked system **${label}** (${system.system_id}). your token, channels, and settings were removed.`
+  );
 }
 
 const SWITCH_HANDLERS = {
@@ -256,7 +272,8 @@ const HELP_TEXT = [
   "3. `/switches add-channel` — pick what channels to post to using the channel id (bot must be in the server)",
   "",
   "**commands**",
-  "`/link-system` — link or update your pluralkit system",
+  "`/link-system` — link or update your pluralkit system (one per discord account)",
+  "`/unlink-system` — unlink your system and delete stored token and settings",
   "`/switches` — enable/disable posting, manage channels, set name mode",
   "  · `enable` / `disable` — global posting (all servers) on/off",
   "  · `add-channel` / `remove-channel` / `list-channels` — configure channels to post to",
@@ -276,6 +293,7 @@ async function handleHelp(interaction) {
 const COMMAND_HANDLERS = {
   "link-system": (interaction, deps) =>
     handleLinkSystem(interaction, deps.db, deps.pkClient, deps.encryptionKey),
+  "unlink-system": (interaction, deps) => handleUnlinkSystem(interaction, deps.db),
   switches: (interaction, deps) => handleSwitches(interaction, deps.db),
   timezone: (interaction, deps) => handleTimezone(interaction, deps.db),
   "int-status": (interaction, deps) => handleIntStatus(interaction, deps.db),

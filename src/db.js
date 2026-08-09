@@ -155,7 +155,10 @@ class BotDatabase {
       insertLastSwitchMigrate: this.db.prepare(`
         INSERT INTO last_switch (system_id, last_switch_signature)
         VALUES (?, ?)
-      `)
+      `),
+      deleteChannelsBySystem: this.db.prepare("DELETE FROM system_channels WHERE system_id = ?"),
+      deleteLastSwitchBySystem: this.db.prepare("DELETE FROM last_switch WHERE system_id = ?"),
+      deleteSystem: this.db.prepare("DELETE FROM systems WHERE system_id = ?")
     };
   }
 
@@ -297,6 +300,22 @@ class BotDatabase {
       timezone,
       namePreference
     );
+  }
+
+  unlinkSystem(systemId) {
+    if (!this.getSystemById(systemId)) return false;
+
+    this.db.exec("BEGIN");
+    try {
+      this.stmts.deleteChannelsBySystem.run(systemId);
+      this.stmts.deleteLastSwitchBySystem.run(systemId);
+      this.stmts.deleteSystem.run(systemId);
+      this.db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   setSwitchesEnabled(systemId, enabled) {
